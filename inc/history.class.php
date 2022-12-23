@@ -187,117 +187,144 @@ class PluginEscaladeHistory extends CommonDBTM {
          return false;
       }
 
-      $groups     = implode("','", $_SESSION['glpigroups']);
+      $groups     = $_SESSION['glpigroups'];
       $numrows    = 0;
-      $is_deleted = " `glpi_tickets`.`is_deleted` = 0 ";
+      $criteria = [
+          'SELECT' => ['glpi_tickets.id'],
+          'DISTINCT' => true,
+          'FROM'   => 'glpi_tickets',
+          'LEFT JOIN' => [
+              'glpi_tickets_users' => [
+                  'ON' => [
+                      'glpi_tickets_users' => 'tickets_id',
+                      'glpi_tickets'       => 'id'
+                  ]
+              ]
+          ],
+          'WHERE' => [
+              'glpi_tickets.is_deleted' => 0
+          ],
+          'ORDER' => 'glpi_tickets.date_mod DESC'
+      ];
 
-      if ($type == "notold") {
-         $title = __("Tickets to follow (climbed)", "escalade");
-         $status = CommonITILObject::INCOMING.", ".CommonITILObject::PLANNED.", ".
-                   CommonITILObject::ASSIGNED.", ".CommonITILObject::WAITING;
+      if (count($groups)) {
+          if ($type == "notold") {
+              $title = __("Tickets to follow (climbed)", "escalade");
+              $status = [CommonITILObject::INCOMING, CommonITILObject::PLANNED, CommonITILObject::ASSIGNED, CommonITILObject::WAITING];
 
-         $search_assign = " `glpi_plugin_escalade_histories`.`groups_id` IN ('$groups')
-            AND (`glpi_groups_tickets`.`groups_id` NOT IN ('$groups')
-            OR `glpi_groups_tickets`.`groups_id` IS NULL)";
+              $criteria['WHERE']['glpi_plugin_escalade_histories.groups_id'] = $groups;
+              $criteria['WHERE'][] = [
+                  'OR' => [
+                      'NOT' => ['glpi_groups_tickets.groups_id' => $groups],
+                      'glpi_groups_tickets.groups_id' => null
+                  ]
+              ];
+              $criteria['LEFT JOIN']['glpi_plugin_escalade_histories'] = [
+                  'ON' => [
+                      'glpi_plugin_escalade_histories' => 'tickets_id',
+                      'glpi_tickets' => 'id'
+                  ]
+              ];
+              $criteria['LEFT JOIN']['glpi_groups_tickets'] = [
+                  'ON' => [
+                      'glpi_groups_tickets' => 'tickets_id',
+                      'glpi_tickets' => 'id',
+                      [
+                          'AND' => [
+                              'glpi_groups_tickets.type' => CommonITILActor::ASSIGN
+                          ]
+                      ]
+                  ]
+              ];
+          } else {
+              $title = __("Tickets to close (climbed)", "escalade");
+              $status = CommonITILObject::SOLVED;
 
-         $query_join = "LEFT JOIN `glpi_plugin_escalade_histories`
-            ON (`glpi_tickets`.`id` = `glpi_plugin_escalade_histories`.`tickets_id`)
-         LEFT JOIN `glpi_groups_tickets`
-            ON (`glpi_tickets`.`id` = `glpi_groups_tickets`.`tickets_id`
-               AND `glpi_groups_tickets`.`type`=2)";
-      } else {
-         $title = __("Tickets to close (climbed)", "escalade");
-         $status = CommonITILObject::SOLVED;
-
-         $search_assign = " (`glpi_groups_tickets`.`groups_id` IN ('$groups'))";
-
-         $query_join = "LEFT JOIN `glpi_groups_tickets`
-            ON (`glpi_tickets`.`id` = `glpi_groups_tickets`.`tickets_id`
-               AND `glpi_groups_tickets`.`type`=2)";
+              $criteria['WHERE']['glpi_groups_tickets.groups_id'] = $groups;
+              $criteria['LEFT JOIN']['glpi_groups_tickets'] = [
+                  'ON' => [
+                      'glpi_groups_tickets' => 'tickets_id',
+                      'glpi_tickets' => 'id',
+                      [
+                          'AND' => [
+                              'glpi_groups_tickets.type' => CommonITILActor::ASSIGN
+                          ]
+                      ]
+                  ]
+              ];
+          }
       }
 
-      $query = "SELECT DISTINCT `glpi_tickets`.`id`
-                FROM `glpi_tickets`
-                LEFT JOIN `glpi_tickets_users`
-                  ON (`glpi_tickets`.`id` = `glpi_tickets_users`.`tickets_id`)";
+      $criteria['WHERE']['glpi_tickets.status'] = $status;
+      $criteria['WHERE'] += getEntitiesRestrictCriteria('glpi_tickets');
 
-      $query .= $query_join;
-
-      $query .= "WHERE $is_deleted AND ( $search_assign )
-                  AND (`status` IN ($status))".
-                  getEntitiesRestrictRequest("AND", "glpi_tickets");
-
-      $query  .= " ORDER BY glpi_tickets.date_mod DESC";
-
-      $result  = $DB->query($query);
-      $numrows = $DB->numrows($result);
-      if (!$numrows) {
+      $it  = $DB->request($criteria);
+      $numrows = count($it);
+      if ($numrows === 0) {
          return;
       }
 
-      $query .= " LIMIT 0, 5";
-      $result = $DB->query($query);
-      $number = $DB->numrows($result);
+      $limit = 5;
+      $number = min($numrows, $limit);
 
       //show central list
-      if ($numrows > 0) {
-         //construct link to ticket list
-         $options['reset'] = 'reset';
+     //construct link to ticket list
+     $options['reset'] = 'reset';
 
-         $options['criteria'][0]['field']      = 12; // status
-         $options['criteria'][0]['searchtype'] = 'equals';
-         if ($type == 'notold') {
-            $options['criteria'][0]['value']   = 'notold';
-         } else if ($type == 'solved') {
-            $options['criteria'][0]['value']   = 5;
-         }
-         $options['criteria'][0]['link']       = 'AND';
+     $options['criteria'][0]['field']      = 12; // status
+     $options['criteria'][0]['searchtype'] = 'equals';
+     if ($type == 'notold') {
+        $options['criteria'][0]['value']   = 'notold';
+     } else if ($type == 'solved') {
+        $options['criteria'][0]['value']   = 5;
+     }
+     $options['criteria'][0]['link']       = 'AND';
 
-         if ($type == 'notold') {
-            $options['criteria'][1]['field']      = 1881; // groups_id_assign for escalade history
-            $options['criteria'][1]['searchtype'] = 'equals';
-            $options['criteria'][1]['value']      = 'mygroups';
-            $options['criteria'][1]['link']       = 'AND';
-         }
+     if ($type == 'notold') {
+        $options['criteria'][1]['field']      = 1881; // groups_id_assign for escalade history
+        $options['criteria'][1]['searchtype'] = 'equals';
+        $options['criteria'][1]['value']      = 'mygroups';
+        $options['criteria'][1]['link']       = 'AND';
+     }
 
-         $options['criteria'][2]['field']      = 8; // groups_id_assign
-         if ($type == 'notold') {
-            $options['criteria'][2]['searchtype'] = 'notequals';
-         } else {
-            $options['criteria'][2]['searchtype'] = 'equals';
-         }
-         $options['criteria'][2]['value']      = 'mygroups';
-         $options['criteria'][2]['link']       = 'AND';
+     $options['criteria'][2]['field']      = 8; // groups_id_assign
+     if ($type == 'notold') {
+        $options['criteria'][2]['searchtype'] = 'notequals';
+     } else {
+        $options['criteria'][2]['searchtype'] = 'equals';
+     }
+     $options['criteria'][2]['value']      = 'mygroups';
+     $options['criteria'][2]['link']       = 'AND';
 
-         echo "<div class='grid-item col-xl-6 col-xxl-4'><div class='card'>";
-         echo "<div class='card-body p-0'>";
-         echo "<div class='lazy-widget' data-itemtype='Ticket' data-widget='central_list'>";
-         echo "<div class='table-responsive card-table'>";
-         echo "<table class='table table-borderless table-striped table-hover card-table'>";
-         echo "<thead>";
-         echo "<tr><th colspan='4'>";
-         echo "<a href=\"".$CFG_GLPI["root_doc"]."/front/ticket.php?".
-                         Toolbox::append_params($options, '&amp;')."\">".
-                         Html::makeTitle($title, $number, $numrows)."</a>";
-         echo "</th></tr>";
+     echo "<div class='grid-item col-xl-6 col-xxl-4'><div class='card'>";
+     echo "<div class='card-body p-0'>";
+     echo "<div class='lazy-widget' data-itemtype='Ticket' data-widget='central_list'>";
+     echo "<div class='table-responsive card-table'>";
+     echo "<table class='table table-borderless table-striped table-hover card-table'>";
+     echo "<thead>";
+     echo "<tr><th colspan='4'>";
+     echo "<a href=\"".$CFG_GLPI["root_doc"]."/front/ticket.php?".
+                     Toolbox::append_params($options, '&amp;')."\">".
+                     Html::makeTitle($title, $number, $numrows)."</a>";
+     echo "</th></tr>";
 
-         if ($number) {
-            echo "<tr>";
-            echo "<th></th>";
-            echo "<th>".__('Requester')."</th>";
-            echo "<th>".__('Associated element')."</th>";
-            echo "<th>".__('Description')."</th></tr></thead>";
-            for ($i = 0; $i < $number; $i++) {
-               $ID = $DB->result($result, $i, "id");
-               Ticket::showVeryShort($ID, 'Ticket$2');
-            }
-         }
-         echo "</table>";
-         echo "</div>";
-         echo "</div>";
-         echo "</div>";
-         echo "</div>";
-         echo "</div>";
-      }
-   }
+     if ($number) {
+        echo "<tr>";
+        echo "<th></th>";
+        echo "<th>".__('Requester')."</th>";
+        echo "<th>".__('Associated element')."</th>";
+        echo "<th>".__('Description')."</th></tr></thead>";
+        for ($i = 0; $i < $number; $i++) {
+           $ID = $it->current()['id'];
+           Ticket::showVeryShort($ID, 'Ticket$2');
+           $it->next();
+        }
+     }
+     echo "</table>";
+     echo "</div>";
+     echo "</div>";
+     echo "</div>";
+     echo "</div>";
+     echo "</div>";
+  }
 }
